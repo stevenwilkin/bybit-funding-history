@@ -1,0 +1,1 @@
+# Bybit Funding History
