@@ -8,22 +8,26 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 )
+
+type fundingRate struct {
+	FundingRate          string `json:"fundingRate"`
+	FundingRateTimestamp string `json:"fundingRateTimestamp"`
+}
 
 type fundingRatesResponse struct {
 	Result struct {
-		List []struct {
-			FundingRate string `json:"fundingRate"`
-		} `json:"list"`
+		List []fundingRate `json:"list"`
 	} `json:"result"`
 }
 
-func getFundingRates() ([]float64, error) {
-	var fundingRates []float64
-
+func getPage(startTime, endTime int64) ([]fundingRate, error) {
 	v := url.Values{
-		"category": {"inverse"},
-		"symbol":   {"BTCUSD"}}
+		"category":  {"inverse"},
+		"symbol":    {"BTCUSD"},
+		"startTime": {fmt.Sprintf("%d", startTime)},
+		"endTime":   {fmt.Sprintf("%d", endTime)}}
 
 	u := url.URL{
 		Scheme:   "https",
@@ -33,32 +37,77 @@ func getFundingRates() ([]float64, error) {
 
 	resp, err := http.Get(u.String())
 	if err != nil {
-		return fundingRates, err
+		return []fundingRate{}, err
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return fundingRates, err
+		return []fundingRate{}, err
 	}
 
 	var result fundingRatesResponse
 	json.Unmarshal(body, &result)
 
-	for _, item := range result.Result.List {
-		funding, err := strconv.ParseFloat(item.FundingRate, 64)
+	return result.Result.List, nil
+}
+
+func getFundingRates(initialTime int64) ([]float64, error) {
+	var (
+		results      []float64
+		fundingRates []fundingRate
+		err          error
+	)
+
+	startTime := initialTime
+	endTime := time.Now().UnixNano() / int64(time.Millisecond)
+
+	for {
+		fundingRates, err = getPage(startTime, endTime)
 		if err != nil {
-			continue
+			return []float64{}, err
 		}
 
-		fundingRates = append(fundingRates, funding)
+		for _, item := range fundingRates {
+			funding, err := strconv.ParseFloat(item.FundingRate, 64)
+			if err != nil {
+				continue
+			}
+
+			results = append(results, funding)
+		}
+
+		if len(fundingRates) == 200 {
+			// results are paged in reverse chronological order
+			oldestItem := fundingRates[len(fundingRates)-1]
+			ts, _ := strconv.Atoi(oldestItem.FundingRateTimestamp)
+			endTime = int64(ts) - 1
+		} else {
+			break
+		}
 	}
 
-	return fundingRates, err
+	return results, err
+}
+
+func startTime() int64 {
+	var days int
+
+	if len(os.Args) == 2 {
+		days, _ = strconv.Atoi(os.Args[1])
+	}
+
+	if days == 0 {
+		days = 30
+	}
+
+	ts := time.Now().AddDate(0, 0, days*-1)
+
+	return ts.UnixNano() / int64(time.Millisecond)
 }
 
 func main() {
-	fundingRates, err := getFundingRates()
+	fundingRates, err := getFundingRates(startTime())
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
